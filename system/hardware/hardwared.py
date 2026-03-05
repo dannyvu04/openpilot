@@ -198,6 +198,7 @@ def hardware_thread(end_event, hw_queue) -> None:
   engaged_prev = False
   pwrsave = False
   offroad_cycle_count = 0
+  ignition_prev = onroad_conditions["ignition"]
 
   params = Params()
   power_monitor = PowerMonitoring()
@@ -226,7 +227,10 @@ def hardware_thread(end_event, hw_queue) -> None:
     if sm.updated['pandaStates'] and len(pandaStates) > 0:
 
       # Set ignition based on any panda connected
-      onroad_conditions["ignition"] = any(ps.ignitionLine or ps.ignitionCan for ps in pandaStates if ps.pandaType != log.PandaState.PandaType.unknown)
+      ignition = any(ps.ignitionLine or ps.ignitionCan for ps in pandaStates if ps.pandaType != log.PandaState.PandaType.unknown)
+      if ignition == ignition_prev:
+        onroad_conditions["ignition"] = ignition
+      ignition_prev = ignition
 
       pandaState = pandaStates[0]
 
