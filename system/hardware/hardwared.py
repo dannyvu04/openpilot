@@ -33,7 +33,6 @@ TEMP_TAU = 5.   # 5s time constant
 DISCONNECT_TIMEOUT = 5.  # wait 5 seconds before going offroad after disconnect so you get an alert
 PANDA_STATES_TIMEOUT = round(1000 / SERVICE_LIST['pandaStates'].frequency * 1.5)  # 1.5x the expected pandaState frequency
 ONROAD_CYCLE_TIME = 1  # seconds to wait offroad after requesting an onroad cycle
-IGNITION_DEBOUNCE_TIME = 0.3  # seconds to wait before applying ignition state changes
 
 ThermalBand = namedtuple("ThermalBand", ['min_temp', 'max_temp'])
 HardwareState = namedtuple("HardwareState", ['network_type', 'network_info', 'network_strength', 'network_stats',
@@ -199,8 +198,7 @@ def hardware_thread(end_event, hw_queue) -> None:
   engaged_prev = False
   pwrsave = False
   offroad_cycle_count = 0
-  ignition_raw_prev = onroad_conditions["ignition"]
-  ignition_change_frame = 0
+  ignition_prev = onroad_conditions["ignition"]
 
   params = Params()
   power_monitor = PowerMonitoring()
@@ -229,12 +227,10 @@ def hardware_thread(end_event, hw_queue) -> None:
     if sm.updated['pandaStates'] and len(pandaStates) > 0:
 
       # Set ignition based on any panda connected
-      ignition_raw = any(ps.ignitionLine or ps.ignitionCan for ps in pandaStates if ps.pandaType != log.PandaState.PandaType.unknown)
-      if ignition_raw != ignition_raw_prev:
-        ignition_raw_prev = ignition_raw
-        ignition_change_frame = sm.frame
-      elif (sm.frame - ignition_change_frame) >= IGNITION_DEBOUNCE_TIME * SERVICE_LIST['pandaStates'].frequency:
-        onroad_conditions["ignition"] = ignition_raw
+      ignition = any(ps.ignitionLine or ps.ignitionCan for ps in pandaStates if ps.pandaType != log.PandaState.PandaType.unknown)
+      if ignition == ignition_prev:
+        onroad_conditions["ignition"] = ignition
+      ignition_prev = ignition
 
       pandaState = pandaStates[0]
 
