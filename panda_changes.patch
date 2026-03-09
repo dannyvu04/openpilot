@@ -1,8 +1,17 @@
 diff --git a/panda/board/drivers/can_common.h b/panda/board/drivers/can_common.h
-index 35c6702e..73d51517 100644
+index 11524dd1..9282d9a8 100644
 --- a/panda/board/drivers/can_common.h
 +++ b/panda/board/drivers/can_common.h
-@@ -158,6 +158,8 @@ void can_set_forwarding(uint8_t from, uint8_t to) {
+@@ -10,6 +10,8 @@ can_health_t can_health[PANDA_CAN_CNT] = {{0}, {0}, {0}};
+ // Ignition detected from CAN meessages
+ bool ignition_can = false;
+ uint32_t ignition_can_cnt = 0U;
++bool wake_on_can = false;
++uint32_t wake_on_can_cnt = 0U;
+ 
+ bool can_silent = true;
+ bool can_loopback = false;
+@@ -158,6 +160,8 @@ void can_set_forwarding(uint8_t from, uint8_t to) {
  void ignition_can_hook(CANPacket_t *msg) {
    if (msg->bus == 0U) {
      int len = GET_LEN(msg);
@@ -11,7 +20,14 @@ index 35c6702e..73d51517 100644
  
      // GM exception
      if ((msg->addr == 0x1F1U) && (len == 8)) {
-@@ -186,15 +188,25 @@ void ignition_can_hook(CANPacket_t *msg) {
+@@ -180,21 +184,40 @@ void ignition_can_hook(CANPacket_t *msg) {
+       prev_counter_rivian = counter;
+     }
+ 
+-    // Tesla Model 3/Y exception
++    // Tesla Model 3/Y exception - wake-up pulse
+     if ((msg->addr == 0x221U) && (len == 8)) {
+       // 0x221 overlaps with Rivian which has random data on byte 0
        int counter = msg->data[6] >> 4;
  
        static int prev_counter_tesla = -1;
@@ -20,21 +36,74 @@ index 35c6702e..73d51517 100644
          // VCFRONT_LVPowerState->VCFRONT_vehiclePowerState
          int power_state = (msg->data[0] >> 5U) & 0x3U;
 -        ignition_can = power_state == 0x3;  // VEHICLE_POWER_STATE_DRIVE=3
+-        ignition_can_cnt = 0U;
 +        bool power_state_increased = power_state > prev_power_state_tesla;
-+        bool power_state_drive = power_state == 0x3;  // VEHICLE_POWER_STATE_DRIVE=3
-+        bool tesla_not_in_park = (tesla_gear != TESLA_DI_GEAR_P) && (tesla_gear != -1);
-+        ignition_can = power_state_increased || (power_state_drive && tesla_not_in_park);
-         ignition_can_cnt = 0U;
++        if (power_state_increased) {
++          wake_on_can = true;
++          wake_on_can_cnt = 0U;
++        }
 +        prev_power_state_tesla = power_state;
        }
        prev_counter_tesla = counter;
      }
  
++    // Tesla Model 3/Y exception - not Park -> ignition
 +    if ((msg->addr == 0x118U) && (len == 8)) {
 +      // broadcasted only in VEHICLE_POWER_STATE_DRIVE
-+      tesla_gear = (msg->data[2] >> 5) & 0x7;
++      int counter = msg->data[1] & 0x0FU;
++
++      static int prev_counter_tesla_gear = -1;
++      if ((counter == ((prev_counter_tesla_gear + 1) % 16)) && (prev_counter_tesla_gear != -1)) {
++        tesla_gear = (msg->data[2] >> 5) & 0x7;
++        ignition_can = (tesla_gear != TESLA_DI_GEAR_P) && (tesla_gear != -1);
++        ignition_can_cnt = 0U;
++      }
++      prev_counter_tesla_gear = counter;
 +    }
 +
      // Mazda exception
      if ((msg->addr == 0x9EU) && (len == 8)) {
        ignition_can = (msg->data[0] >> 5) == 0x6U;
+diff --git a/panda/board/drivers/drivers.h b/panda/board/drivers/drivers.h
+index c6150670..98f94945 100644
+--- a/panda/board/drivers/drivers.h
++++ b/panda/board/drivers/drivers.h
+@@ -44,6 +44,8 @@ extern can_health_t can_health[PANDA_CAN_CNT];
+ // Ignition detected from CAN meessages
+ extern bool ignition_can;
+ extern uint32_t ignition_can_cnt;
++extern bool wake_on_can;
++extern uint32_t wake_on_can_cnt;
+ 
+ extern bool can_silent;
+ extern bool can_loopback;
+diff --git a/panda/board/main.c b/panda/board/main.c
+index 2bce081e..f3ef12ce 100644
+--- a/panda/board/main.c
++++ b/panda/board/main.c
+@@ -173,7 +173,8 @@ static void tick_handler(void) {
+ 
+       // tick drivers at 1Hz
+       bool started = harness_check_ignition() || ignition_can;
+-      bootkick_tick(started, recent_heartbeat);
++      bool wake_requested = started || wake_on_can;
++      bootkick_tick(wake_requested, recent_heartbeat);
+ 
+       // increase heartbeat counter and cap it at the uint32 limit
+       if (heartbeat_counter < UINT32_MAX) {
+@@ -253,11 +254,15 @@ static void tick_handler(void) {
+       if (ignition_can_cnt > 2U) {
+         ignition_can = false;
+       }
++      if (wake_on_can_cnt > 2U) {
++        wake_on_can = false;
++      }
+ 
+       // on to the next one
+       uptime_cnt += 1U;
+       safety_mode_cnt += 1U;
+       ignition_can_cnt += 1U;
++      wake_on_can_cnt += 1U;
+ 
+       // synchronous safety check
+       safety_tick(&current_safety_config);
